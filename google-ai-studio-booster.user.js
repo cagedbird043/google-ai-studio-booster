@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Google AI Studio Performance Booster (v10.0 Final)
+// @name         Google AI Studio Performance Booster (v18.0 Stable)
 // @namespace    http://branch.root/
-// @version      10.0
-// @description  自动探测并冻结后台对话块，显著降低 CPU 占用。包含 HUD 状态显示。
+// @version      18.0
+// @description  [RootBranch] 生产环境版本。无感冻结后台对话，自动折叠代码块，极致性能优化。
 // @author       Branch of Root
 // @match        https://aistudio.google.com/*
 // @grant        none
@@ -12,160 +12,211 @@
 (function() {
     'use strict';
 
-    // ================= ⚙️ 最终配置 =================
+    // ================= ⚙️ 生产环境配置 =================
     const CONFIG = {
-        scrollContainerSelector: '.layout-main',
-        minItemHeight: 50, // 忽略太矮的元素
-        // 缓冲区：上下各留 1.5 屏高度保持渲染，保证回滚时无白屏感
-        // 如果你觉得还是有点卡，可以把这个数字改小（比如 800px），冻结会更积极
-        rootMargin: '1500px 0px 1500px 0px',
-        debugMode: false // 🔴 关闭调试蓝框，还你清爽界面
-    };
-    // ===========================================
+        // 冻结缓冲区：600px (约一屏高度)
+        // 既能省 CPU，又能保证往回滚时大概率已经预渲染好了，看不到白屏
+        boosterRootMargin: '600px 0px 600px 0px',
 
-    // --- UI: 极简状态面板 (HUD) ---
+        minItemHeight: 50,
+
+        autoCollapse: true,
+        collapseDelay: 2000,
+        codeHeaderSelector: 'mat-expansion-panel-header',
+
+        // 🔴 关闭调试模式：不再显示红绿框，还原原生体验
+        visualDebug: false
+    };
+
+    // --- 📝 日志 ---
+    const ANCHOR = '[RootBranch]';
+    const LOG_STYLE = 'color: #00ff9d; font-weight: bold; background: #003300; padding: 2px 4px; border-radius: 3px;';
+    function log(msg, ...args) { console.log(`%c${ANCHOR} ${msg}`, LOG_STYLE, ...args); }
+
+    // --- UI: HUD (极简模式) ---
     const hud = document.createElement('div');
     hud.style.cssText = `
         position: fixed; top: 10px; right: 10px; z-index: 9999;
-        background: rgba(0,0,0,0.7); color: #aaa; font-family: monospace;
-        padding: 4px 8px; border-radius: 4px; font-size: 11px;
-        pointer-events: none; user-select: none; backdrop-filter: blur(2px);
+        background: rgba(0,0,0,0.7); color: #fff; font-family: monospace; font-size: 11px;
+        padding: 4px 8px; border-radius: 4px; pointer-events: none; opacity: 0.6;
+        transition: opacity 0.3s;
     `;
-    hud.textContent = '初始化...';
+    hud.textContent = `Booster v18`;
     document.body.appendChild(hud);
 
-    // --- Core: 样式注入 ---
+    // 鼠标悬停时显示详细信息，平时半透明
+    hud.addEventListener('mouseenter', () => hud.style.opacity = 1);
+    hud.addEventListener('mouseleave', () => hud.style.opacity = 0.6);
+
+    // --- CSS ---
     const style = document.createElement('style');
     style.textContent = `
-        /* 冻结状态：移出渲染树，保留占位 */
+        /* 核心优化：移出渲染树，但保留布局占位 */
         .boost-frozen {
             content-visibility: hidden !important;
             contain: size layout style !important;
         }
+
+        /* 仅在调试模式下生效的样式 */
+        ${CONFIG.visualDebug ? `
+            .boost-debug-active { border-left: 4px solid #4caf50 !important; }
+            .boost-frozen.boost-debug-active {
+                border-left: 4px solid #f44336 !important;
+                background: repeating-linear-gradient(45deg, #333, #333 10px, #444 10px, #444 20px) !important;
+                opacity: 0.5 !important;
+            }
+        ` : ''}
     `;
     document.head.appendChild(style);
 
-    // --- Core: 视口观察者 (性能核心) ---
-    let activeFrozen = 0;
-    const observer = new IntersectionObserver((entries) => {
+    // ================= 1. 智能容器锁定 =================
+    // 自动寻找页面上正在滚动的那个容器
+    function findScrollContainer() {
+        // 优先检查 AI Studio 的特定结构
+        let candidate = document.querySelector('.layout-main');
+        if (candidate && window.getComputedStyle(candidate).overflowY.includes('scroll')) return candidate;
+
+        // 兜底：找最大的滚动容器
+        const allDivs = document.querySelectorAll('div, main');
+        for (let div of allDivs) {
+            const style = window.getComputedStyle(div);
+            if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && div.scrollHeight > div.clientHeight) {
+                return div;
+            }
+        }
+        return null; // Fallback to viewport
+    }
+
+    // ================= 2. Booster Engine =================
+
+    let stats = { frozen: 0, total: 0, code: 0 };
+    let boosterSet = new WeakSet();
+    let scrollRoot = findScrollContainer();
+
+    if (scrollRoot) log(`🎯 锁定滚动容器: .${scrollRoot.className}`);
+
+    const boosterObserver = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
             const el = entry.target;
             if (entry.isIntersecting) {
-                // [解冻] 进入缓冲区，恢复渲染
+                // 解冻
                 if (el.classList.contains('boost-frozen')) {
                     el.classList.remove('boost-frozen');
-                    // 移除强制尺寸，允许内容高度自适应变化
                     el.style.containIntrinsicSize = '';
                     el.style.height = '';
-                    activeFrozen--;
+                    stats.frozen--;
                 }
             } else {
-                // [冻结] 滚出缓冲区，停止渲染
+                // 冻结
                 const rect = entry.boundingClientRect;
-                // 双重检查高度，防止冻结了刚生成的 0 高度元素
                 if (rect.height > CONFIG.minItemHeight) {
-                    // 📸 关键：拍摄高度快照，防止滚动条抖动
                     el.style.containIntrinsicSize = `${rect.width}px ${rect.height}px`;
                     el.style.height = `${rect.height}px`;
-                    el.classList.add('boost-frozen');
-                    activeFrozen++;
+                    if (!el.classList.contains('boost-frozen')) {
+                        el.classList.add('boost-frozen');
+                        stats.frozen++;
+                    }
                 }
             }
         });
         updateHUD();
     }, {
-        root: document.querySelector(CONFIG.scrollContainerSelector),
-        rootMargin: CONFIG.rootMargin,
+        root: scrollRoot,
+        rootMargin: CONFIG.boosterRootMargin,
         threshold: 0
     });
 
-    // --- Logic: 智能雷达系统 ---
-    let currentTargetContainer = null;
-    let observedCount = 0;
-    let observedSet = new WeakSet();
+    // ================= 3. Collapser Engine =================
+
+    let codeSet = new WeakSet();
+    const collapseObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            const header = entry.target;
+            if (entry.isIntersecting) {
+                if (header.dataset.collapseTimer) {
+                    clearTimeout(parseInt(header.dataset.collapseTimer));
+                    delete header.dataset.collapseTimer;
+                }
+            } else {
+                if (header.getAttribute('aria-expanded') === 'true') {
+                    header.dataset.collapseTimer = setTimeout(() => {
+                        if (header.isConnected && header.getAttribute('aria-expanded') === 'true') {
+                            header.click();
+                        }
+                    }, CONFIG.collapseDelay);
+                }
+            }
+        });
+    }, { root: null, threshold: 0 });
+
+    // ================= 4. Scanner =================
 
     function updateHUD() {
-        // 只有当有冻结元素时才高亮显示，平时保持低调
-        const color = activeFrozen > 0 ? '#4caf50' : '#aaa';
-        hud.style.color = color;
-        hud.style.border = activeFrozen > 0 ? '1px solid #4caf50' : 'none';
-        hud.textContent = `Booster: ${activeFrozen} / ${observedCount} ❄️`;
+        hud.textContent = `Booster: ${stats.frozen}/${stats.total} | Code: ${stats.code}`;
+        hud.style.color = stats.frozen > 0 ? '#4caf50' : '#fff';
     }
 
-    // 寻找最佳容器算法
-    function findBestContainer(root) {
-        let best = null;
-        let maxCount = 0;
-
-        function traverse(node) {
-            if (!node || node.nodeType !== 1) return;
-
-            const children = node.children;
-            if (children && children.length > 2) {
-                let validCount = 0;
-                for (let i = 0; i < children.length; i++) {
-                    const tag = children[i].tagName;
-                    // 只要是像样的块级元素就算
-                    if (tag !== 'SCRIPT' && tag !== 'STYLE' && tag !== 'SPAN') {
-                        validCount++;
-                    }
-                }
-                if (validCount > maxCount) {
-                    maxCount = validCount;
-                    best = node;
-                }
-            }
-
-            if (node.shadowRoot) traverse(node.shadowRoot);
-
-            // 性能优化：只遍历前几层，避免深层递归卡死
-            // 大多数对话容器都在较浅的层级
-            if (children.length < 50) {
-                for (let i = 0; i < children.length; i++) traverse(children[i]);
-            }
+    function queryDeepAll(root, selector) {
+        let results = [];
+        if (!root) return results;
+        if (root.querySelectorAll) results.push(...Array.from(root.querySelectorAll(selector)));
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null, false);
+        while (walker.nextNode()) {
+            const node = walker.currentNode;
+            if (node.shadowRoot) results.push(...queryDeepAll(node.shadowRoot, selector));
         }
-
-        traverse(root);
-        return best;
+        return results;
     }
 
-    function radarScan() {
-        const root = document.querySelector(CONFIG.scrollContainerSelector) || document.body;
-
-        // 1. 如果当前没锁定容器，或者容器被销毁了，重新搜索
-        if (observedCount === 0 || !currentTargetContainer || !currentTargetContainer.isConnected) {
-            const best = findBestContainer(root);
-            if (best && best !== currentTargetContainer) {
-                // console.log("📡 [Booster] 锁定新容器:", best);
-                currentTargetContainer = best;
-            }
+    function scan() {
+        // 动态检查容器变化
+        const currentRoot = findScrollContainer();
+        if (currentRoot !== scrollRoot && currentRoot !== null) {
+            scrollRoot = currentRoot;
+            // 生产环境不频繁打印日志，保持控制台干净
         }
 
-        // 2. 将容器内的新元素加入监控
-        if (currentTargetContainer) {
-            const children = currentTargetContainer.children;
-            for (let i = 0; i < children.length; i++) {
-                const child = children[i];
-                if (!observedSet.has(child)) {
-                    const tag = child.tagName;
-                    if (tag !== 'STYLE' && tag !== 'SCRIPT' && tag !== 'LINK') {
-                        observer.observe(child);
-                        observedSet.add(child);
-                        observedCount++;
-                    }
-                }
+        // 扫描对话
+        let targets = queryDeepAll(document.body, 'ms-turn, ms-response, .turn-container, ms-user-turn, ms-model-turn');
+
+        // 盲扫兜底
+        if (targets.length === 0) {
+            let best = null, max = 0;
+            document.querySelectorAll('div').forEach(d => {
+                if(d.children.length > max && !d.tagName.includes('CODE')) { max = d.children.length; best = d; }
+            });
+            if (best) targets = Array.from(best.children);
+        }
+
+        targets.forEach(el => {
+            if (!boosterSet.has(el)) {
+                const tag = el.tagName;
+                if (['SCRIPT', 'STYLE', 'LINK', 'TEMPLATE'].includes(tag)) return;
+                if (el.closest('code') || el.closest('pre')) return;
+
+                boosterObserver.observe(el);
+                boosterSet.add(el);
+                if (CONFIG.visualDebug) el.classList.add('boost-debug-active');
+                stats.total++;
             }
+        });
+
+        // 扫描代码
+        if (CONFIG.autoCollapse) {
+            const headers = queryDeepAll(document.body, CONFIG.codeHeaderSelector);
+            headers.forEach(h => {
+                if (!codeSet.has(h)) {
+                    collapseObserver.observe(h);
+                    codeSet.add(h);
+                    stats.code++;
+                }
+            });
         }
         updateHUD();
     }
 
-    // --- 启动 ---
-    function start() {
-        radarScan();
-        // 低频轮询，确保新生成的对话能被抓到
-        setInterval(radarScan, 2000);
-    }
-
-    setTimeout(start, 2000);
+    log('v18.0 Production Started');
+    scan();
+    setInterval(scan, 2000);
 
 })();
