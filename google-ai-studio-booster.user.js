@@ -78,6 +78,9 @@
         // --- Config ---
         const CONFIG = {
             boosterRootMargin: '600px 0px 600px 0px',
+            // [新增] 代码折叠缓冲区：2500px (约等于 3-5 个对话块的高度)
+            // 只有滚出这个范围，代码块才会自动折叠
+            codeCollapseBuffer: '2500px 0px 2500px 0px', 
             minItemHeight: 50,
             autoCollapse: true,
             collapseDelay: 2000,
@@ -249,7 +252,7 @@
                     clearTimeout(entry.target.dataset.timer); delete entry.target.dataset.timer;
                 }
             });
-        }, { root: null, threshold: 0 });
+        }, { root: null, rootMargin: CONFIG.codeCollapseBuffer, threshold: 0 });
 
         function scan() {
             createDock();
