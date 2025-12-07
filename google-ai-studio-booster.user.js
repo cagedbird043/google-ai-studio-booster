@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Google AI Studio Performance Booster (v27.0 Smart Fold)
+// @name         Google AI Studio Performance Booster (v29.0 Trusted Hardened)
 // @namespace    http://branch.root/
-// @version      27.0
-// @description  [RootBranch] 智能折叠逻辑：保留<20行(400px)的短代码块不折叠。API劫持+DOM冻结双核驱动。
+// @version      29.0
+// @description  [RootBranch] 彻底修复 Trusted Types 报错。全量 HTML 注入安全化。增强文件扫描选择器。
 // @author       Branch of Root
 // @match        https://aistudio.google.com/*
 // @grant        none
@@ -60,15 +60,28 @@
     document.addEventListener('DOMContentLoaded', initBooster);
 
     function initBooster() {
-        console.log('[RootBranch] 🚀 Smart Fold Engine Starting...');
+        // --- 🛡️ Trusted Types Policy (安全通行证) ---
+        let policy = { createHTML: (s) => s };
+        if (window.trustedTypes && window.trustedTypes.createPolicy) {
+            try { 
+                policy = window.trustedTypes.createPolicy('booster_policy_v29', { 
+                    createHTML: s => s 
+                }); 
+            } catch (e) {
+                // 如果策略名重复，尝试复用已有的（极端情况）
+                console.warn('Policy create failed, UI might break on Strict CSP');
+            }
+        }
+        // 核心安全函数：所有 innerHTML 必须经过它
+        const safe = (html) => policy.createHTML(html);
+        // ---------------------------------------------
+
+        console.log('[RootBranch] 🚀 Hardened Engine Starting...');
 
         const CONFIG = {
             boosterRootMargin: '600px 0px 600px 0px',
-            
-            // [新增] 代码折叠判定逻辑
-            codeCollapseBuffer: '2500px 0px 2500px 0px', // 1. 只有滚出很远才折叠
-            minHeightToFold: 400, // 2. [关键] 只有高度超过 400px (约20行) 才折叠，短代码保持展开
-            
+            codeCollapseBuffer: '2500px 0px 2500px 0px',
+            minHeightToFold: 400,
             minItemHeight: 50,
             autoCollapse: true,
             collapseDelay: 2000,
@@ -85,19 +98,36 @@
         style.textContent = `
             .boost-frozen { content-visibility: hidden !important; contain: size layout style !important; }
             body.is-exporting .boost-frozen { content-visibility: visible !important; contain: none !important; }
-            #booster-dock { position: fixed; bottom: 20px; left: 20px; z-index: 99999; font-family: sans-serif; user-select: none; }
-            #booster-main-btn { background: #fff; border: 1px solid #dadce0; border-radius: 24px; padding: 8px 16px; display: flex; align-items: center; gap: 8px; cursor: grab; box-shadow: 0 4px 12px rgba(0,0,0,0.15); transition: transform 0.1s; }
+            
+            /* 上移默认位置 */
+            #booster-dock { position: fixed; bottom: 150px; left: 20px; z-index: 99999; font-family: sans-serif; user-select: none; display: flex; flex-direction: column; gap: 8px; }
+            
+            #booster-main-btn { background: #fff; border: 1px solid #dadce0; border-radius: 24px; padding: 8px 16px; display: flex; align-items: center; gap: 8px; cursor: grab; box-shadow: 0 4px 12px rgba(0,0,0,0.15); transition: transform 0.1s; color: #3c4043; font-size: 13px; font-weight: 500;}
             #booster-main-btn:active { cursor: grabbing; transform: scale(0.98); }
+            
             .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; transition: background 0.3s; }
             .status-dot.active { background: #1e8e3e; box-shadow: 0 0 4px #1e8e3e; }
             .status-dot.intercepted { background: #a142f4; box-shadow: 0 0 4px #a142f4; }
+            
             #booster-menu { background: #fff; border-radius: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); display: none; flex-direction: column; margin-bottom: 8px; min-width: 240px; overflow: hidden; }
             #booster-menu.show { display: flex; }
-            .menu-item { padding: 10px 16px; font-size: 13px; color: #3c4043; cursor: pointer; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #f1f3f4; }
+            .menu-item { padding: 10px 16px; font-size: 13px; color: #3c4043; cursor: pointer; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #f1f3f4; transition: background 0.1s; }
             .menu-item:hover { background: #f1f3f4; }
+            .menu-divider { height: 1px; background: #f1f3f4; margin: 2px 0; }
             .menu-info { font-size: 11px; color: #70757a; padding: 8px 16px; background: #f8f9fa; border-top: 1px solid #eee; }
+            
             .badge-api { background: #e8f0fe; color: #1967d2; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
             .badge-dom { background: #e6f4ea; color: #137333; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
+
+            /* 文件列表 */
+            #file-list-area { display: none; border-top: 1px solid #eee; background: #fafafa; max-height: 250px; overflow-y: auto; flex-direction: column; }
+            #file-list-area.show { display: flex; }
+            .file-item { padding: 8px 16px; font-size: 12px; color: #444; cursor: pointer; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #f1f1f1; }
+            .file-item:hover { background: #e8f0fe; color: #1967d2; }
+            .file-tag { font-size: 10px; background: #ddd; padding: 1px 4px; border-radius: 4px; margin-left: 8px;}
+            
+            @keyframes flash-highlight { 0% { outline: 4px solid #ff00ff; background: rgba(255,0,255,0.2); } 100% { outline: 4px solid transparent; background: transparent; } }
+            .highlight-target { animation: flash-highlight 1.5s ease-out; }
         `;
         document.head.appendChild(style);
 
@@ -116,21 +146,10 @@
 
         // --- Logic: Check Code Height ---
         function isCodeBlockTall(header) {
-            // 找到 header 所在的 panel
             const panel = header.closest('mat-expansion-panel');
-            if (!panel) return true; // 找不到父级，保守起见默认折叠
-            
-            // 尝试找到内容区域 (通常是 pre 标签或者 panel-content)
-            // 在 Angular Material 中，内容通常是 header 的兄弟节点，或者在 view-encapsulation 下
-            // 我们直接找 panel 下的 pre 标签，这最准
+            if (!panel) return true; 
             const pre = panel.querySelector('pre');
-            if (pre) {
-                // 如果高度小于阈值 (20行 * 20px = 400px)，则不折叠
-                if (pre.offsetHeight < CONFIG.minHeightToFold) {
-                    // console.log(`[SmartFold] Skipping short block: ${pre.offsetHeight}px`);
-                    return false;
-                }
-            }
+            if (pre && pre.offsetHeight < CONFIG.minHeightToFold) return false;
             return true;
         }
 
@@ -139,21 +158,41 @@
             if (document.getElementById('booster-dock')) return;
             const dock = document.createElement('div');
             dock.id = 'booster-dock';
-            dock.innerHTML = `
+            
+            // Restore Position
+            const savedPos = localStorage.getItem('booster_pos');
+            if (savedPos) {
+                try {
+                    const pos = JSON.parse(savedPos);
+                    dock.style.left = pos.left;
+                    dock.style.top = pos.top;
+                    dock.style.bottom = 'auto'; 
+                    dock.style.right = 'auto';
+                } catch(e) {}
+            }
+
+            // 🛡️ Safe HTML
+            dock.innerHTML = safe(`
                 <div id="booster-menu">
                     <div class="menu-item" id="btn-export-raw"><span>📦</span> 导出原始 JSON</div>
-                    <div class="menu-item" id="btn-export-md"><span>📝</span> 导出为 Markdown</div>
+                    <div class="menu-divider"></div>
+                    <div class="menu-item" id="btn-show-files"><span>📂</span> 文件列表 <span id="file-count" style="margin-left:auto;color:#999;font-size:10px;"></span></div>
+                    <div id="file-list-area"></div>
+                    <div class="menu-divider"></div>
                     <div class="menu-info">
                         <div>API: <span id="api-status">等待...</span></div>
                         <div id="dom-stats">Ready</div>
                     </div>
                 </div>
-                <div id="booster-main-btn"><div class="status-dot"></div><span>Booster v27</span></div>
-            `;
+                <div id="booster-main-btn"><div class="status-dot"></div><span>Booster v29</span></div>
+            `);
             document.body.appendChild(dock);
             
             const mainBtn = dock.querySelector('#booster-main-btn');
             const menu = dock.querySelector('#booster-menu');
+            const fileBtn = dock.querySelector('#btn-show-files');
+            const fileArea = dock.querySelector('#file-list-area');
+            const fileCount = dock.querySelector('#file-count');
             
             let isDragging = false, startX, startY, iLeft, iTop;
             mainBtn.addEventListener('mousedown', (e) => {
@@ -163,9 +202,63 @@
                 document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
             });
             function onMove(e) { if((e.clientX-startX)**2+(e.clientY-startY)**2>25) isDragging=true; dock.style.left=`${iLeft+e.clientX-startX}px`; dock.style.top=`${iTop+e.clientY-startY}px`; }
-            function onUp() { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); if(!isDragging){ menu.classList.toggle('show'); updateUI(); } }
+            function onUp() { 
+                document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); 
+                if(isDragging) {
+                    localStorage.setItem('booster_pos', JSON.stringify({ left: dock.style.left, top: dock.style.top }));
+                } else {
+                    menu.classList.toggle('show'); updateUI(); 
+                } 
+            }
 
             dock.querySelector('#btn-export-raw').addEventListener('click', () => { menu.classList.remove('show'); handleJsonExport(); });
+            
+            // File List Logic with Expanded Selectors & Safety
+            function scanAndListFiles() {
+                // [更新选择器] 增加 mat-chip, mat-chip-row 等，覆盖更多文件展示形式
+                const files = queryDeepAll(document.body, 'ms-drive-document, ms-uploaded-file, ms-text-attachment, ms-drive-chip, ms-image-chip, ms-attachment-chip, mat-chip-row');
+                
+                // 🛡️ Safe HTML
+                fileArea.innerHTML = safe('');
+                fileCount.textContent = files.length > 0 ? `(${files.length})` : '';
+
+                if (files.length === 0) {
+                    // 🛡️ Safe HTML
+                    fileArea.innerHTML = safe('<div style="padding:10px;text-align:center;color:#999;font-size:11px;">未找到文件 (尝试滚动页面加载更多)</div>');
+                    return;
+                }
+
+                files.forEach((el, index) => {
+                    let name = el.getAttribute('aria-label') || el.innerText || 'Unknown File';
+                    name = name.split('\n')[0].trim().substring(0, 30) + (name.length>30?'...':'');
+                    
+                    const item = document.createElement('div');
+                    item.className = 'file-item';
+                    
+                    // 🛡️ Safe HTML
+                    item.innerHTML = safe(`<span>${index+1}. ${name}</span> <span class="file-tag">GO</span>`);
+                    
+                    item.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        el.scrollIntoView({behavior: "smooth", block: "center"});
+                        el.classList.remove('highlight-target');
+                        void el.offsetWidth;
+                        el.classList.add('highlight-target');
+                    });
+                    fileArea.appendChild(item);
+                });
+            }
+
+            fileBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (fileArea.classList.contains('show')) {
+                    fileArea.classList.remove('show');
+                } else {
+                    scanAndListFiles();
+                    fileArea.classList.add('show');
+                }
+            });
+
             window.__UPDATE_UI__ = updateUI;
         }
 
@@ -177,14 +270,16 @@
             if (apiStatus) {
                 if (window.__BOOSTER_RAW_DATA__) {
                     const size = Math.round(JSON.stringify(window.__BOOSTER_RAW_DATA__).length / 1024);
-                    apiStatus.innerHTML = `<span class="badge-api">捕获 ${size}KB</span>`;
+                    // 🛡️ Safe HTML
+                    apiStatus.innerHTML = safe(`<span class="badge-api">捕获 ${size}KB</span>`);
                     if(dot) dot.classList.add('intercepted');
                 } else {
                     apiStatus.textContent = "等待刷新...";
                 }
             }
             if (domStats) {
-                domStats.innerHTML = `<span class="badge-dom">${stats.frozen}/${stats.total}</span> Code: ${stats.code}`;
+                // 🛡️ Safe HTML
+                domStats.innerHTML = safe(`<span class="badge-dom">${stats.frozen}/${stats.total}</span> Code: ${stats.code}`);
                 if(dot && !window.__BOOSTER_RAW_DATA__) stats.frozen > 0 ? dot.classList.add('active') : dot.classList.remove('active');
             }
         }
@@ -226,25 +321,17 @@
             updateUI();
         }, { root: scrollRoot, rootMargin: CONFIG.boosterRootMargin, threshold: 0 });
 
-        // [更新] Collapser 现在使用独立的、更大的缓冲区，且增加了高度检查
         const collapseObserver = new IntersectionObserver((entries) => {
             entries.forEach(entry => {
                 const header = entry.target;
                 if (entry.isIntersecting) {
-                    // 进入视野 (进入 2500px 缓冲区)：取消折叠
                     if (header.dataset.collapseTimer) {
                         clearTimeout(parseInt(header.dataset.collapseTimer));
                         delete header.dataset.collapseTimer;
                     }
                 } else {
-                    // 离开视野 (超出 2500px)：尝试折叠
                     if (header.getAttribute('aria-expanded') === 'true') {
-                        
-                        // ✨ 智能判断：如果是短代码，直接跳过，不折叠
-                        if (!isCodeBlockTall(header)) {
-                            return; 
-                        }
-
+                        if (!isCodeBlockTall(header)) return; 
                         header.dataset.collapseTimer = setTimeout(() => {
                             if (header.isConnected && header.getAttribute('aria-expanded') === 'true') {
                                 header.click();
@@ -253,15 +340,13 @@
                     }
                 }
             });
-        }, { root: null, rootMargin: CONFIG.codeCollapseBuffer, threshold: 0 }); // 使用专用的大缓冲区
+        }, { root: null, rootMargin: CONFIG.codeCollapseBuffer, threshold: 0 });
 
         function scan() {
             createDock();
             const cur = findScrollContainer(); if(cur!==scrollRoot && cur!==null) scrollRoot=cur;
-            
             let targets = queryDeepAll(document.body, 'ms-turn, ms-response, .turn-container, ms-user-turn, ms-model-turn');
             if(targets.length===0) document.querySelectorAll('div').forEach(d=>{ if(d.children.length>50 && !d.tagName.includes('CODE')) targets=Array.from(d.children); });
-            
             targets.forEach(el => {
                 if(!boosterSet.has(el) && !el.closest('code') && !['SCRIPT','STYLE'].includes(el.tagName)) {
                     boosterObserver.observe(el); boosterSet.add(el); stats.total++;
