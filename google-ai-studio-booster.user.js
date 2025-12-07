@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Google AI Studio Performance Booster (v21.0 Logic Sync)
+// @name         Google AI Studio Performance Booster (v22.0 Purified Export)
 // @namespace    http://branch.root/
-// @version      21.0
-// @description  [RootBranch] 修复导出报 "No turns found" 的问题（同步盲扫逻辑）。增加悬浮坞拖拽功能。
+// @version      22.0
+// @description  [RootBranch] 彻底重写导出逻辑。增加“垃圾过滤器”，屏蔽 UI 图标、按钮文字。智能识别代码块格式。
 // @author       Branch of Root
 // @match        https://aistudio.google.com/*
 // @grant        none
@@ -38,54 +38,40 @@
             content-visibility: visible !important;
             contain: none !important;
         }
-
-        /* 悬浮坞样式 (增加 grab 手势) */
+        /* 悬浮坞样式 */
         #booster-dock {
             position: fixed; bottom: 20px; left: 20px; z-index: 99999;
             display: flex; flex-direction: column; gap: 8px;
-            font-family: 'Google Sans', 'Roboto', sans-serif;
-            user-select: none; /* 防止拖拽时选中文字 */
+            font-family: 'Google Sans', 'Roboto', sans-serif; user-select: none;
         }
-
         #booster-main-btn {
             background: #fff; border: 1px solid #dadce0;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            border-radius: 24px; padding: 8px 16px;
-            display: flex; align-items: center; gap: 8px;
-            cursor: grab; transition: transform 0.1s, box-shadow 0.2s;
-            color: #3c4043; font-size: 13px; font-weight: 500;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15); border-radius: 24px; padding: 8px 16px;
+            display: flex; align-items: center; gap: 8px; cursor: grab;
+            color: #3c4043; font-size: 13px; font-weight: 500; transition: transform 0.1s;
         }
         #booster-main-btn:active { cursor: grabbing; transform: scale(0.98); }
-        
         .status-dot {
             width: 8px; height: 8px; border-radius: 50%; background: #ccc;
-            transition: background 0.3s; pointer-events: none;
+            transition: background 0.3s;
         }
         .status-dot.active { background: #1e8e3e; box-shadow: 0 0 4px #1e8e3e; }
-
         #booster-menu {
-            background: #fff; border: 1px solid #dadce0;
-            border-radius: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-            overflow: hidden; display: none; flex-direction: column;
-            margin-bottom: 8px; min-width: 180px;
+            background: #fff; border: 1px solid #dadce0; border-radius: 12px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2); overflow: hidden; display: none;
+            flex-direction: column; margin-bottom: 8px; min-width: 180px;
         }
-        #booster-menu.show { display: flex; animation: fadeIn 0.15s ease-out; }
-        
+        #booster-menu.show { display: flex; }
         .menu-item {
             padding: 10px 16px; font-size: 13px; color: #3c4043; cursor: pointer;
-            display: flex; align-items: center; gap: 10px; transition: background 0.1s;
+            display: flex; align-items: center; gap: 10px;
         }
         .menu-item:hover { background: #f1f3f4; }
-        .menu-divider { height: 1px; background: #f1f3f4; margin: 2px 0; }
         .menu-info { font-size: 11px; color: #70757a; padding: 4px 16px 8px; pointer-events: none;}
-
-        @keyframes fadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
     `;
     document.head.appendChild(style);
 
-    // ================= 🛠️ Shared Helpers (核心修复点) =================
-
-    // 深度搜索
+    // ================= 🛠️ Helpers =================
     function queryDeepAll(root, selector) {
         let results = [];
         if (!root) return results;
@@ -98,196 +84,135 @@
         return results;
     }
 
-    // 寻找最大容器 (盲扫)
-    function findFatContainer(root) {
-        let best = null;
-        let maxCount = 0;
-        function traverse(node) {
-            if (!node || node.nodeType !== 1) return;
-            // 跳过非容器元素
-            if (['CODE', 'PRE', 'SVG', 'TEXTAREA', 'SCRIPT', 'STYLE'].includes(node.tagName)) return;
-
-            const children = node.children;
-            if (children && children.length > 3) {
-                let blockCount = 0;
-                for (let i = 0; i < children.length; i++) {
-                    const tag = children[i].tagName;
-                    // 只要是 div 或者自定义标签就算
-                    if (tag === 'DIV' || tag.includes('-')) blockCount++;
-                }
-                if (blockCount > maxCount) {
-                    maxCount = blockCount;
-                    best = node;
-                }
-            }
-            if (node.shadowRoot) traverse(node.shadowRoot);
-            // 限制深度防止卡死
-            if (children.length < 50) for(let i=0; i<children.length; i++) traverse(children[i]);
-        }
-        traverse(root);
-        return best;
-    }
-
-    // 统一获取对话列表 (The Fix: 让导出和冻结使用完全相同的逻辑)
-    function getAllTurns() {
-        // 1. 尝试精准搜索
-        let targets = queryDeepAll(document.body, 'ms-turn, ms-response, .turn-container, ms-user-turn, ms-model-turn');
+    // ================= 📝 Core: Purified Markdown Extractor (重写核心) =================
+    
+    function extractMarkdownFromElement(root) {
+        let text = "";
         
-        // 2. 尝试盲扫 fallback
-        if (targets.length === 0) {
-            const fatContainer = findFatContainer(document.body);
-            if (fatContainer) {
-                targets = Array.from(fatContainer.children);
-                // 简单的二次过滤，确保不是脚本
-                targets = targets.filter(el => !['SCRIPT', 'STYLE', 'LINK'].includes(el.tagName));
+        // 自定义过滤器：屏蔽垃圾元素
+        const filter = {
+            acceptNode: function(node) {
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    const tag = node.tagName;
+                    const cls = node.className || "";
+                    
+                    // 1. 屏蔽按钮和图标 (这是造成 more_vert/edit/download 的元凶)
+                    if (tag === 'BUTTON' || node.getAttribute('role') === 'button') return NodeFilter.FILTER_REJECT;
+                    if (tag === 'MAT-ICON' || tag === 'SVG') return NodeFilter.FILTER_REJECT;
+                    if (typeof cls === 'string' && (cls.includes('material-symbols') || cls.includes('material-icons'))) return NodeFilter.FILTER_REJECT;
+                    
+                    // 2. 屏蔽系统提示
+                    if (tag === 'MS-TOOLTIP' || node.getAttribute('aria-hidden') === 'true') return NodeFilter.FILTER_REJECT;
+                }
+                return NodeFilter.FILTER_ACCEPT;
+            }
+        };
+
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, filter, false);
+        
+        while (walker.nextNode()) {
+            const node = walker.currentNode;
+
+            // --- 处理代码块 (PRE) ---
+            if (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'PRE') {
+                // 尝试找语言
+                let lang = '';
+                // 策略：往上找 container，再找 header
+                const container = node.closest('.code-block-wrapper') || node.parentNode;
+                if (container) {
+                    const header = container.querySelector('.header, mat-expansion-panel-header');
+                    if (header) {
+                        // 提取 header 里的纯文本作为语言 (排除 icon)
+                        lang = header.innerText.replace(/content_copy|download|edit|more_vert/g, '').trim();
+                    }
+                }
+                
+                // 提取代码内容
+                const codeContent = node.textContent;
+                text += `\n\`\`\`${lang}\n${codeContent}\n\`\`\`\n`;
+                
+                // 跳过 PRE 的子节点，防止重复提取
+                // (TreeWalker 没有内置的 skipChildren，这里通过逻辑控制不重复加 text)
+                continue; 
+            }
+
+            // --- 处理普通文本 ---
+            if (node.nodeType === Node.TEXT_NODE) {
+                const parent = node.parentNode;
+                // 如果父节点是 PRE，说明是代码块内容，上面已经处理过了，跳过
+                if (parent.tagName === 'PRE' || parent.tagName === 'CODE') continue;
+                if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(parent.tagName)) continue;
+
+                let content = node.textContent;
+                // 简单清洗
+                if (content.trim().length > 0) {
+                    text += content;
+                }
+            }
+
+            // --- 处理换行 ---
+            if (node.nodeType === Node.ELEMENT_NODE) {
+                const display = window.getComputedStyle(node).display;
+                if (display === 'block' || display === 'flex' || node.tagName === 'P' || node.tagName === 'BR') {
+                    // 避免连续太多换行
+                    if (!text.endsWith('\n\n')) {
+                        text += '\n';
+                    }
+                }
             }
         }
-        return targets;
+        
+        // 最终清洗：去除多余空行，去除奇怪的 Unicode
+        return text.replace(/\n{3,}/g, '\n\n').trim();
     }
 
-    // ================= UI Module: Draggable Dock =================
-
-    function createDock() {
-        if (document.getElementById('booster-dock')) return;
-
-        const dock = document.createElement('div');
-        dock.id = 'booster-dock';
-        dock.innerHTML = `
-            <div id="booster-menu">
-                <div class="menu-item" id="btn-export">
-                    <span>💾</span> 导出为 Markdown
-                </div>
-                <div class="menu-divider"></div>
-                <div class="menu-info" id="menu-stats">
-                    Wait...
-                </div>
-            </div>
-            <div id="booster-main-btn">
-                <div class="status-dot"></div>
-                <span>Booster</span>
-            </div>
-        `;
-        document.body.appendChild(dock);
-
-        const mainBtn = dock.querySelector('#booster-main-btn');
-        const menu = dock.querySelector('#booster-menu');
-        const exportBtn = dock.querySelector('#btn-export');
-
-        // 拖拽逻辑
-        let isDragging = false;
-        let startX, startY, initialLeft, initialTop;
-
-        mainBtn.addEventListener('mousedown', (e) => {
-            if (e.button !== 0) return; // 只响应左键
-            isDragging = false;
-            startX = e.clientX;
-            startY = e.clientY;
-            const rect = dock.getBoundingClientRect();
-            initialLeft = rect.left;
-            initialTop = rect.top;
-            
-            // 清除 bottom/right 定位，改为 top/left 以便拖拽
-            dock.style.bottom = 'auto';
-            dock.style.right = 'auto';
-            dock.style.left = `${initialLeft}px`;
-            dock.style.top = `${initialTop}px`;
-
-            document.addEventListener('mousemove', onMouseMove);
-            document.addEventListener('mouseup', onMouseUp);
-        });
-
-        function onMouseMove(e) {
-            const dx = e.clientX - startX;
-            const dy = e.clientY - startY;
-            if (dx * dx + dy * dy > 25) isDragging = true; // 移动超过 5px 视为拖拽
-            dock.style.left = `${initialLeft + dx}px`;
-            dock.style.top = `${initialTop + dy}px`;
-        }
-
-        function onMouseUp(e) {
-            document.removeEventListener('mousemove', onMouseMove);
-            document.removeEventListener('mouseup', onMouseUp);
-            
-            // 如果不是拖拽，则是点击
-            if (!isDragging) {
-                menu.classList.toggle('show');
-                updateMenuStats();
-            }
-        }
-
-        // Close on outside click
-        document.addEventListener('click', (e) => {
-            if (!dock.contains(e.target) && !isDragging) menu.classList.remove('show');
-        });
-
-        // Export Action
-        exportBtn.addEventListener('click', () => {
-            menu.classList.remove('show');
-            handleExport();
-        });
-    }
-
-    function updateMenuStats() {
-        const statText = document.getElementById('menu-stats');
-        if (statText) {
-            statText.textContent = `Frozen: ${stats.frozen}/${stats.total} | Code: ${stats.code}`;
-        }
-        const dot = document.querySelector('.status-dot');
-        if (dot) {
-            if (stats.frozen > 0) dot.classList.add('active');
-            else dot.classList.remove('active');
-        }
-    }
-
-    // ================= Feature: Markdown Exporter =================
+    // ================= Feature: Exporter =================
 
     async function handleExport() {
         const btnText = document.querySelector('#booster-main-btn span');
         const originalText = btnText.textContent;
         btnText.textContent = '⏳ ...';
 
-        document.body.classList.add('is-exporting'); // 解冻
-        await new Promise(r => requestAnimationFrame(r));
-        await new Promise(r => setTimeout(r, 100)); 
+        document.body.classList.add('is-exporting'); 
+        await new Promise(r => setTimeout(r, 100)); // 等待解冻
 
         try {
-            // 使用与 Booster 完全相同的逻辑获取 turns
-            const turns = getAllTurns(); 
-            
+            // 1. 获取所有 turns (盲扫 + 精准)
+            let turns = queryDeepAll(document.body, 'ms-turn, ms-response, .turn-container, ms-user-turn, ms-model-turn');
             if (turns.length === 0) {
-                alert('Export Failed: No turns found! (Booster found 0 too?)');
-                return;
+                // 盲扫 fallback
+                document.querySelectorAll('div').forEach(d => {
+                    if (d.children.length > 50 && !d.tagName.includes('CODE')) turns = Array.from(d.children);
+                });
             }
+            
+            // 过滤脚本
+            turns = turns.filter(t => !['SCRIPT', 'STYLE'].includes(t.tagName));
+
+            if (turns.length === 0) throw new Error("No turns found.");
 
             let mdContent = "";
             let userCount = 0;
-            let modelCount = 0;
 
             turns.forEach(turn => {
-                let role = "Unknown";
+                let role = "Model";
+                // 角色判断逻辑
                 const tag = turn.tagName.toLowerCase();
                 const cls = turn.className.toLowerCase();
+                const style = window.getComputedStyle(turn);
                 
-                // 简单的角色猜测逻辑
-                if (tag.includes('user') || cls.includes('user')) role = "User";
-                else if (tag.includes('model') || tag.includes('response') || cls.includes('model')) role = "Model";
-                else {
-                    // 盲扫模式下的交替猜测：偶数是 User，奇数是 Model (通常如此)
-                    // 或者根据对齐方式判断 (align-right 通常是 user)
-                    if (window.getComputedStyle(turn).justifyContent === 'flex-end') role = "User";
-                    else role = "Model";
+                if (tag.includes('user') || cls.includes('user') || style.justifyContent === 'flex-end') {
+                    role = "User";
+                    userCount++;
                 }
-                
-                if (role === 'User') userCount++; else modelCount++;
 
-                let text = extractMarkdownFromElement(turn);
-                if (text && text.trim()) {
-                    mdContent += `**${role}:**\n\n${text}\n\n---\n\n`;
+                const content = extractMarkdownFromElement(turn);
+                if (content) {
+                    mdContent += `**${role}:**\n\n${content}\n\n---\n\n`;
                 }
             });
 
-            console.log(`Exported: ${userCount} User turns, ${modelCount} Model turns`);
-
+            // 下载
             const blob = new Blob([mdContent], { type: 'text/markdown' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -295,133 +220,113 @@
             a.download = `Chat_Export_${new Date().toISOString().slice(0,19).replace(/T|:/g, '-')}.md`;
             a.click();
             URL.revokeObjectURL(url);
+            
+            console.log(`Exported ${turns.length} turns.`);
+
         } catch (e) {
             console.error(e);
-            alert('Export Error: ' + e.message);
+            alert('Export Failed: ' + e.message);
         } finally {
-            document.body.classList.remove('is-exporting'); // 恢复冻结
+            document.body.classList.remove('is-exporting');
             btnText.textContent = originalText;
         }
     }
 
-    function extractMarkdownFromElement(root) {
-        let text = "";
-        const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, null, false);
-        while (walker.nextNode()) {
-            const node = walker.currentNode;
-            if (node.nodeType === Node.TEXT_NODE) {
-                if (node.parentNode && ['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(node.parentNode.tagName)) continue;
-                if (node.textContent.trim().length === 0) continue;
-                text += node.textContent;
-            } else if (node.nodeType === Node.ELEMENT_NODE) {
-                if (node.tagName.toLowerCase() === 'mat-expansion-panel-header') {
-                    const langSpan = node.querySelector('.mat-expansion-panel-header-title > span:nth-child(2)');
-                    const lang = langSpan ? langSpan.textContent.trim() : '';
-                    text += `\n\`\`\`${lang}\n`;
-                }
-                const display = window.getComputedStyle(node).display;
-                if (display === 'block' || display === 'flex' || node.tagName === 'BR' || node.tagName === 'P') text += '\n';
-            }
-        }
-        return text.trim();
+    // ================= UI & Booster Logic =================
+
+    function createDock() {
+        if (document.getElementById('booster-dock')) return;
+        const dock = document.createElement('div');
+        dock.id = 'booster-dock';
+        dock.innerHTML = `
+            <div id="booster-menu">
+                <div class="menu-item" id="btn-export"><span>💾</span> 导出为 Markdown (净化版)</div>
+                <div class="menu-item" style="font-size:10px;color:#999;cursor:default;">v22.0 Purified</div>
+                <div class="menu-info" id="menu-stats">Waiting...</div>
+            </div>
+            <div id="booster-main-btn"><div class="status-dot"></div><span>Booster</span></div>
+        `;
+        document.body.appendChild(dock);
+
+        const mainBtn = dock.querySelector('#booster-main-btn');
+        const menu = dock.querySelector('#booster-menu');
+        
+        // 拖拽
+        let isDragging = false, startX, startY, iLeft, iTop;
+        mainBtn.addEventListener('mousedown', (e) => {
+            if(e.button!==0)return; isDragging=false; startX=e.clientX; startY=e.clientY;
+            const r = dock.getBoundingClientRect(); iLeft=r.left; iTop=r.top;
+            dock.style.bottom='auto'; dock.style.right='auto'; dock.style.left=`${iLeft}px`; dock.style.top=`${iTop}px`;
+            document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+        });
+        function onMove(e) { if((e.clientX-startX)**2+(e.clientY-startY)**2>25) isDragging=true; dock.style.left=`${iLeft+e.clientX-startX}px`; dock.style.top=`${iTop+e.clientY-startY}px`; }
+        function onUp() { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); if(!isDragging){ menu.classList.toggle('show'); updateStats(); } }
+
+        dock.querySelector('#btn-export').addEventListener('click', () => { menu.classList.remove('show'); handleExport(); });
     }
 
-    // ================= Core Logic =================
+    function updateStats() {
+        const t = document.getElementById('menu-stats');
+        if(t) t.textContent = `Frozen: ${stats.frozen}/${stats.total} | Code: ${stats.code}`;
+        const d = document.querySelector('.status-dot');
+        if(d) stats.frozen>0 ? d.classList.add('active') : d.classList.remove('active');
+    }
 
-    // 寻找滚动容器 (用于优化 Booster 性能，不影响发现 turns)
+    // Booster Engines
     function findScrollContainer() {
         let candidate = document.querySelector('.layout-main');
         if (candidate && window.getComputedStyle(candidate).overflowY.includes('scroll')) return candidate;
         const allDivs = document.querySelectorAll('div, main');
         for (let div of allDivs) {
             const style = window.getComputedStyle(div);
-            if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && div.scrollHeight > div.clientHeight) {
-                return div;
-            }
+            if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && div.scrollHeight > div.clientHeight) return div;
         }
         return null;
     }
-
     let scrollRoot = findScrollContainer();
 
     const boosterObserver = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
-            const el = entry.target;
             if (entry.isIntersecting) {
-                if (el.classList.contains('boost-frozen')) {
-                    el.classList.remove('boost-frozen');
-                    el.style.containIntrinsicSize = '';
-                    el.style.height = '';
-                    stats.frozen--;
-                }
+                entry.target.classList.remove('boost-frozen');
+                entry.target.style.containIntrinsicSize = ''; entry.target.style.height = '';
+                stats.frozen--;
             } else {
-                const rect = entry.boundingClientRect;
-                if (rect.height > CONFIG.minItemHeight) {
-                    el.style.containIntrinsicSize = `${rect.width}px ${rect.height}px`;
-                    el.style.height = `${rect.height}px`;
-                    if (!el.classList.contains('boost-frozen')) {
-                        el.classList.add('boost-frozen');
-                        stats.frozen++;
-                    }
+                if(entry.boundingClientRect.height > CONFIG.minItemHeight) {
+                    entry.target.style.containIntrinsicSize = `${entry.boundingClientRect.width}px ${entry.boundingClientRect.height}px`;
+                    entry.target.style.height = `${entry.boundingClientRect.height}px`;
+                    if(!entry.target.classList.contains('boost-frozen')) { entry.target.classList.add('boost-frozen'); stats.frozen++; }
                 }
             }
         });
-        updateMenuStats();
+        updateStats();
     }, { root: scrollRoot, rootMargin: CONFIG.boosterRootMargin, threshold: 0 });
 
     const collapseObserver = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
-            const header = entry.target;
-            if (entry.isIntersecting) {
-                if (header.dataset.collapseTimer) {
-                    clearTimeout(parseInt(header.dataset.collapseTimer));
-                    delete header.dataset.collapseTimer;
-                }
-            } else {
-                if (header.getAttribute('aria-expanded') === 'true') {
-                    header.dataset.collapseTimer = setTimeout(() => {
-                        if (header.isConnected && header.getAttribute('aria-expanded') === 'true') {
-                            header.click();
-                        }
-                    }, CONFIG.collapseDelay);
-                }
+            if (!entry.isIntersecting && entry.target.getAttribute('aria-expanded') === 'true') {
+                entry.target.dataset.timer = setTimeout(() => { if(entry.target.isConnected) entry.target.click(); }, CONFIG.collapseDelay);
+            } else if (entry.isIntersecting && entry.target.dataset.timer) {
+                clearTimeout(entry.target.dataset.timer); delete entry.target.dataset.timer;
             }
         });
     }, { root: null, threshold: 0 });
 
     function scan() {
-        createDock(); 
-        const currentRoot = findScrollContainer();
-        if (currentRoot !== scrollRoot && currentRoot !== null) scrollRoot = currentRoot;
-
-        // 使用统一的逻辑获取 turns
-        const targets = getAllTurns();
-
+        createDock();
+        const cur = findScrollContainer(); if(cur!==scrollRoot && cur!==null) scrollRoot=cur;
+        
+        let targets = queryDeepAll(document.body, 'ms-turn, ms-response, .turn-container, ms-user-turn, ms-model-turn');
+        if(targets.length===0) document.querySelectorAll('div').forEach(d=>{ if(d.children.length>50 && !d.tagName.includes('CODE')) targets=Array.from(d.children); });
+        
         targets.forEach(el => {
-            if (!boosterSet.has(el)) {
-                const tag = el.tagName;
-                if (el.closest('code') || el.closest('pre')) return;
-
-                boosterObserver.observe(el);
-                boosterSet.add(el);
-                stats.total++;
+            if(!boosterSet.has(el) && !el.closest('code') && !['SCRIPT','STYLE'].includes(el.tagName)) {
+                boosterObserver.observe(el); boosterSet.add(el); stats.total++;
             }
         });
-
-        if (CONFIG.autoCollapse) {
-            const headers = queryDeepAll(document.body, CONFIG.codeHeaderSelector);
-            headers.forEach(h => {
-                if (!codeSet.has(h)) {
-                    collapseObserver.observe(h);
-                    codeSet.add(h);
-                    stats.code++;
-                }
-            });
-        }
-        updateMenuStats();
+        if(CONFIG.autoCollapse) queryDeepAll(document.body, CONFIG.codeHeaderSelector).forEach(h=>{ if(!codeSet.has(h)){ collapseObserver.observe(h); codeSet.add(h); stats.code++; } });
+        updateStats();
     }
-
-    scan();
-    setInterval(scan, 2000);
-
+    
+    scan(); setInterval(scan, 2000);
 })();
