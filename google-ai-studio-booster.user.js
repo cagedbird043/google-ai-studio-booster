@@ -210,70 +210,60 @@
 
             // --- [v32] File Scanner ---
             function scanAndListFiles() {
-                console.log('[FileScanner] Starting scan v32...');
-
-                let turns = queryDeepAll(document.body, 'ms-turn, ms-response, .turn-container, ms-user-turn, ms-model-turn');
-                if (turns.length === 0) {
-                    const allDivs = document.querySelectorAll('div');
-                    for(let d of allDivs) {
-                        if (d.children.length > 50 && !d.tagName.includes('CODE')) {
-                            turns = Array.from(d.children);
-                            console.log('[FileScanner] Fallback blind scan used');
-                            break;
-                        }
-                    }
-                }
-
-                // Debug: Print first turn structure if found
-                if (turns.length > 0) {
-                    console.log(`[FileScanner Debug] Turns Found: ${turns.length}. Inspecting first turn:`, turns[0]);
-                    if (turns[0].shadowRoot) {
-                        console.log('[FileScanner Debug] Turn has ShadowRoot. Root content:', turns[0].shadowRoot);
-                    } else {
-                        console.log('[FileScanner Debug] Turn has NO ShadowRoot.');
-                    }
-                }
-
-                // 2. 深入每个 Turn 内部
-                const fileSelector = 'ms-file-chunk, .file-chunk-container, ms-drive-document, ms-uploaded-file, .attachment-chip, mat-chip-row';
-                let allFiles = [];
-
-                turns.forEach((turn) => {
-                    const filesInTurn = queryDeepAll(turn, fileSelector);
-                    if (filesInTurn.length > 0) allFiles.push(...filesInTurn);
-                });
-
-                console.log(`[FileScanner] Total files: ${allFiles.length}`);
-
+                console.log('[FileScanner] Starting Global Scan...');
+                
+                // [修复] 放弃 Turn 递归，直接全屏地毯式搜索目标标签
+                // ms-file-chunk: 你截图里确认的标签
+                // .file-chunk-container: 对应的类名
+                // mat-chip-row: 有时候文件会变成小圆角条
+                const selector = 'ms-file-chunk, .file-chunk-container, ms-drive-document, ms-uploaded-file, mat-chip-row';
+                
+                // 使用 queryDeepAll 在 document.body 全局搜，防止万一有漏网的 Shadow DOM
+                const files = queryDeepAll(document.body, selector);
+                
+                console.log(`[FileScanner] Global found: ${files.length}`);
+                
                 fileArea.innerHTML = safe('');
-                fileCount.textContent = allFiles.length > 0 ? `(${allFiles.length})` : '';
+                fileCount.textContent = files.length > 0 ? `(${files.length})` : '';
 
-                if (allFiles.length === 0) {
-                    fileArea.innerHTML = safe('<div style="padding:10px;text-align:center;color:#999;font-size:11px;">未找到文件 (请查看 Console Debug 日志)</div>');
+                if (files.length === 0) {
+                    fileArea.innerHTML = safe('<div style="padding:10px;text-align:center;color:#999;font-size:11px;">未找到文件 (标签不匹配或未加载)</div>');
                     return;
                 }
 
-                allFiles.forEach((el, index) => {
+                files.forEach((el, index) => {
                     let name = 'Unknown File';
+                    
+                    // 优先找内部的 .name (针对 ms-file-chunk)
                     const nameSpan = el.querySelector ? el.querySelector('.name') : null;
+                    
                     if (nameSpan) {
                         name = nameSpan.innerText || nameSpan.getAttribute('title');
                     } else if (el.getAttribute) {
                         name = el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText;
                     }
+                    
+                    // 过滤掉纯图标文字 (如 "docs", "image")
+                    if (['docs', 'image', 'description'].includes(name.trim())) {
+                         // 如果名字取错了，尝试找父级或兄弟文本
+                         name = el.innerText.replace(/docs|image/g, '').trim() || 'File Attachment';
+                    }
+
                     name = name ? name.replace(/\s+/g, ' ').trim() : 'Unknown';
                     const displayName = name.length > 30 ? name.substring(0, 27) + '...' : name;
-
+                    
                     const item = document.createElement('div');
                     item.className = 'file-item';
                     item.innerHTML = safe(`<span>${index+1}. ${displayName}</span> <span class="file-tag">GO</span>`);
+                    
                     item.addEventListener('click', (e) => {
                         e.stopPropagation();
-                        const targetToHighlight = el.closest('ms-file-chunk') || el;
-                        targetToHighlight.scrollIntoView({behavior: "smooth", block: "center"});
-                        targetToHighlight.classList.remove('highlight-target');
-                        void targetToHighlight.offsetWidth;
-                        targetToHighlight.classList.add('highlight-target');
+                        // 尽量滚动整个组件
+                        const target = el.closest('ms-file-chunk') || el;
+                        target.scrollIntoView({behavior: "smooth", block: "center"});
+                        target.classList.remove('highlight-target');
+                        void target.offsetWidth;
+                        target.classList.add('highlight-target');
                     });
                     fileArea.appendChild(item);
                 });
@@ -296,6 +286,7 @@
             const apiStatus = document.getElementById('api-status');
             const domStats = document.getElementById('dom-stats');
             const dot = document.querySelector('.status-dot');
+            const safe = (h) => h; // 兼容上下文中的 safe 定义
 
             if (apiStatus) {
                 if (window.__BOOSTER_RAW_DATA__) {
@@ -307,8 +298,15 @@
                 }
             }
             if (domStats) {
-                domStats.innerHTML = safe(`<span class="badge-dom">${stats.frozen}/${stats.total}</span> Code: ${stats.code}`);
-                if(dot && !window.__BOOSTER_RAW_DATA__) stats.frozen > 0 ? dot.classList.add('active') : dot.classList.remove('active');
+                // [修复] 不读 stats.frozen，直接数 DOM 里的红色冻结块，绝对不会负数
+                const realFrozenCount = document.querySelectorAll('.boost-frozen').length;
+                stats.frozen = realFrozenCount; // 同步回去
+                
+                domStats.innerHTML = safe(`<span class="badge-dom">${realFrozenCount}/${stats.total}</span> Code: ${stats.code}`);
+                
+                if(dot && !window.__BOOSTER_RAW_DATA__) {
+                    realFrozenCount > 0 ? dot.classList.add('active') : dot.classList.remove('active');
+                }
             }
         }
 
