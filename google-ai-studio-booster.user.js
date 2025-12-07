@@ -210,42 +210,65 @@
 
             // --- [v32] File Scanner ---
             function scanAndListFiles() {
-                console.log('[FileScanner] Starting Global Scan...');
+                console.log('[FileScanner] Starting Deep Scan...');
                 
-                // [修复] 放弃 Turn 递归，直接全屏地毯式搜索目标标签
-                // ms-file-chunk: 你截图里确认的标签
-                // .file-chunk-container: 对应的类名
-                // mat-chip-row: 有时候文件会变成小圆角条
-                const selector = 'ms-file-chunk, .file-chunk-container, ms-drive-document, ms-uploaded-file, mat-chip-row';
-                
-                // 使用 queryDeepAll 在 document.body 全局搜，防止万一有漏网的 Shadow DOM
-                const files = queryDeepAll(document.body, selector);
-                
-                console.log(`[FileScanner] Global found: ${files.length}`);
-                
-                fileArea.innerHTML = safe('');
-                fileCount.textContent = files.length > 0 ? `(${files.length})` : '';
+                // 1. 定义安全函数 (同 updateUI)
+                let localSafe = (html) => html;
+                if (window.trustedTypes) {
+                    try { localSafe = (html) => window.trustedTypes.createPolicy('temp_file_' + Math.random(), {createHTML: s=>s}).createHTML(html); } catch(e){}
+                }
 
-                if (files.length === 0) {
-                    fileArea.innerHTML = safe('<div style="padding:10px;text-align:center;color:#999;font-size:11px;">未找到文件 (标签不匹配或未加载)</div>');
+                // 2. 暴力搜索所有 Shadow Root
+                // 这是一个不依赖 queryDeepAll 的独立实现，确保能挖到底
+                let allNodes = [];
+                function traverse(node) {
+                    if (!node) return;
+                    if (node.nodeType === 1) { // Element
+                        // 检查是否是目标文件
+                        const tag = node.tagName.toLowerCase();
+                        if (tag === 'ms-file-chunk' || tag === 'ms-drive-document' || 
+                            node.classList.contains('file-chunk-container') || 
+                            node.classList.contains('attachment-chip')) {
+                            allNodes.push(node);
+                        }
+                        
+                        // 递归子节点
+                        if (node.shadowRoot) {
+                            Array.from(node.shadowRoot.children).forEach(traverse);
+                        }
+                    }
+                    // 遍历普通子节点
+                    if (node.children) {
+                        Array.from(node.children).forEach(traverse);
+                    }
+                }
+                
+                // 从 body 开始无死角遍历
+                traverse(document.body);
+                
+                console.log(`[FileScanner] Found: ${allNodes.length}`);
+                
+                fileArea.innerHTML = localSafe('');
+                fileCount.textContent = allNodes.length > 0 ? `(${allNodes.length})` : '';
+
+                if (allNodes.length === 0) {
+                    fileArea.innerHTML = localSafe('<div style="padding:10px;text-align:center;color:#999;font-size:11px;">未找到文件 (请确保文件已加载在屏幕上)</div>');
                     return;
                 }
 
-                files.forEach((el, index) => {
+                allNodes.forEach((el, index) => {
                     let name = 'Unknown File';
                     
-                    // 优先找内部的 .name (针对 ms-file-chunk)
+                    // 提取文件名逻辑
                     const nameSpan = el.querySelector ? el.querySelector('.name') : null;
-                    
                     if (nameSpan) {
                         name = nameSpan.innerText || nameSpan.getAttribute('title');
                     } else if (el.getAttribute) {
                         name = el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText;
                     }
                     
-                    // 过滤掉纯图标文字 (如 "docs", "image")
+                    // 过滤无关文本
                     if (['docs', 'image', 'description'].includes(name.trim())) {
-                         // 如果名字取错了，尝试找父级或兄弟文本
                          name = el.innerText.replace(/docs|image/g, '').trim() || 'File Attachment';
                     }
 
@@ -254,11 +277,10 @@
                     
                     const item = document.createElement('div');
                     item.className = 'file-item';
-                    item.innerHTML = safe(`<span>${index+1}. ${displayName}</span> <span class="file-tag">GO</span>`);
+                    item.innerHTML = localSafe(`<span>${index+1}. ${displayName}</span> <span class="file-tag">GO</span>`);
                     
                     item.addEventListener('click', (e) => {
                         e.stopPropagation();
-                        // 尽量滚动整个组件
                         const target = el.closest('ms-file-chunk') || el;
                         target.scrollIntoView({behavior: "smooth", block: "center"});
                         target.classList.remove('highlight-target');
@@ -286,23 +308,34 @@
             const apiStatus = document.getElementById('api-status');
             const domStats = document.getElementById('dom-stats');
             const dot = document.querySelector('.status-dot');
-            const safe = (h) => h; // 兼容上下文中的 safe 定义
+            
+            // ⚠️ 关键修复：这里的 safe 必须引用 initBooster 作用域里的那个
+            // 如果这里报错，说明闭包没生效。我们在这里重新获取一次 policy
+            let localSafe = (html) => html;
+            if (window.trustedTypes && window.trustedTypes.defaultPolicy) {
+                localSafe = (html) => window.trustedTypes.defaultPolicy.createHTML(html);
+            } else if (window.trustedTypes && window.trustedTypes.getAttributeType) {
+                 // 尝试复用已存在的策略，或者临时创建一个
+                 try { localSafe = (html) => window.trustedTypes.createPolicy('temp_ui_' + Math.random(), {createHTML: s=>s}).createHTML(html); } catch(e){}
+            }
 
             if (apiStatus) {
                 if (window.__BOOSTER_RAW_DATA__) {
                     const size = Math.round(JSON.stringify(window.__BOOSTER_RAW_DATA__).length / 1024);
-                    apiStatus.innerHTML = safe(`<span class="badge-api">捕获 ${size}KB</span>`);
+                    // 使用 localSafe 包裹
+                    apiStatus.innerHTML = localSafe(`<span class="badge-api">捕获 ${size}KB</span>`);
                     if(dot) dot.classList.add('intercepted');
                 } else {
                     apiStatus.textContent = "等待刷新...";
                 }
             }
             if (domStats) {
-                // [修复] 不读 stats.frozen，直接数 DOM 里的红色冻结块，绝对不会负数
+                // 1. 修复负数：直接数数
                 const realFrozenCount = document.querySelectorAll('.boost-frozen').length;
-                stats.frozen = realFrozenCount; // 同步回去
+                stats.frozen = realFrozenCount; 
                 
-                domStats.innerHTML = safe(`<span class="badge-dom">${realFrozenCount}/${stats.total}</span> Code: ${stats.code}`);
+                // 2. 修复 TrustedHTML：使用 localSafe 包裹
+                domStats.innerHTML = localSafe(`<span class="badge-dom">${realFrozenCount}/${stats.total}</span> Code: ${stats.code}`);
                 
                 if(dot && !window.__BOOSTER_RAW_DATA__) {
                     realFrozenCount > 0 ? dot.classList.add('active') : dot.classList.remove('active');
